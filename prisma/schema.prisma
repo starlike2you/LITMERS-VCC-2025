@@ -1,0 +1,527 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum IssuePriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum NotificationType {
+  ISSUE_ASSIGNED
+  COMMENT_ADDED
+  DUE_DATE_REMINDER_1_DAY
+  DUE_DATE_REMINDER_TODAY
+  TEAM_INVITATION
+  ROLE_CHANGED
+}
+
+// ============================================================================
+// User & Authentication
+// ============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique @db.VarChar(255)
+  password      String?   // Nullable for OAuth users
+  name          String    @db.VarChar(50)
+  profileImage  String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // Soft delete
+
+  // Relations
+  ownedTeams        Team[]              @relation("TeamOwner")
+  teamMemberships   TeamMember[]
+  sentInvitations   TeamInvitation[]    @relation("TeamInviter")
+  createdProjects   Project[]           @relation("ProjectOwner")
+  assignedIssues    Issue[]             @relation("IssueAssignee")
+  ownedIssues       Issue[]             @relation("IssueOwner")
+  comments          Comment[]
+  notifications     Notification[]
+  projectFavorites  ProjectFavorite[]
+  teamActivityLogs  TeamActivityLog[]
+
+  @@index([email])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+// ============================================================================
+// Team Management
+// ============================================================================
+
+model Team {
+  id        String    @id @default(cuid())
+  name      String    @db.VarChar(50)
+  ownerId   String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // Soft delete
+
+  // Relations
+  owner           User                @relation("TeamOwner", fields: [ownerId], references: [id])
+  members         TeamMember[]
+  invitations     TeamInvitation[]
+  projects        Project[]
+  activityLogs    TeamActivityLog[]
+
+  @@index([ownerId])
+  @@index([deletedAt])
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String    @id @default(cuid())
+  teamId    String
+  userId    String
+  role      TeamRole  @default(MEMBER)
+  joinedAt DateTime  @default(now())
+
+  // Relations
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
+  @@map("team_members")
+}
+
+model TeamInvitation {
+  id         String    @id @default(cuid())
+  teamId     String
+  email      String    @db.VarChar(255)
+  invitedBy  String    // userId
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  // Relations
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  inviter User @relation("TeamInviter", fields: [invitedBy], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+  @@index([email])
+  @@index([expiresAt])
+  @@map("team_invitations")
+}
+
+model TeamActivityLog {
+  id        String   @id @default(cuid())
+  teamId    String
+  userId    String   // Actor
+  action    String   @db.VarChar(100)
+  targetType String? @db.VarChar(50) // e.g., "MEMBER", "PROJECT", "TEAM"
+  targetId  String?
+  metadata  Json?    // Additional context
+  createdAt DateTime @default(now())
+
+  // Relations
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("team_activity_logs")
+}
+
+// ============================================================================
+// Project Management
+// ============================================================================
+
+model Project {
+  id          String    @id @default(cuid())
+  name        String    @db.VarChar(100)
+  description String?   @db.Text
+  teamId      String
+  ownerId     String
+  isArchived  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime? // Soft delete
+
+  // Relations
+  team            Team                @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  owner           User                @relation("ProjectOwner", fields: [ownerId], references: [id])
+  issues          Issue[]
+  labels          ProjectLabel[]
+  statuses        ProjectStatus[]
+  favorites       ProjectFavorite[]
+
+  @@index([teamId])
+  @@index([ownerId])
+  @@index([isArchived])
+  @@index([deletedAt])
+  @@map("projects")
+}
+
+model ProjectFavorite {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_favorites")
+}
+
+model ProjectLabel {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String   @db.VarChar(30)
+  color     String   @db.VarChar(7) // HEX color
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  project Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issues  IssueLabelRelation[]
+
+  @@index([projectId])
+  @@map("project_labels")
+}
+
+model ProjectStatus {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String   @db.VarChar(30)
+  color     String?  @db.VarChar(7) // HEX color, optional
+  position  Int      // Order within project
+  wipLimit  Int?     // 1-50 or null for unlimited
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issues  Issue[] @relation("IssueStatus")
+
+  @@unique([projectId, name]) // Ensure unique status names per project
+  @@index([projectId])
+  @@index([projectId, position])
+  @@map("project_statuses")
+}
+
+// ============================================================================
+// Issue Management
+// ============================================================================
+
+model Issue {
+  id            String    @id @default(cuid())
+  title         String    @db.VarChar(200)
+  description   String?   @db.Text
+  projectId     String
+  ownerId       String    // Creator
+  assigneeUserId String?
+  status        String    @default("Backlog") // Default: "Backlog", "In Progress", "Done" or custom status name
+  statusId      String?   // References ProjectStatus if custom status
+  priority      IssuePriority @default(MEDIUM)
+  dueDate       DateTime?
+  position      Int       @default(0) // For ordering within status column
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime? // Soft delete
+
+  // Relations
+  project         Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner           User                @relation("IssueOwner", fields: [ownerId], references: [id])
+  assignee        User?               @relation("IssueAssignee", fields: [assigneeUserId], references: [id])
+  projectStatus   ProjectStatus?      @relation("IssueStatus", fields: [statusId], references: [id], onDelete: SetNull)
+  labels          IssueLabelRelation[]
+  subtasks        IssueSubtask[]
+  comments        Comment[]
+  history         IssueHistory[]
+  summaryCache    IssueSummaryCache?
+  suggestionCache IssueSuggestionCache?
+  commentSummaryCache CommentSummaryCache?
+
+  @@index([projectId])
+  @@index([ownerId])
+  @@index([assigneeUserId])
+  @@index([status])
+  @@index([statusId])
+  @@index([priority])
+  @@index([dueDate])
+  @@index([deletedAt])
+  @@index([projectId, status, position])
+  @@map("issues")
+}
+
+model IssueLabelRelation {
+  id        String   @id @default(cuid())
+  issueId   String
+  labelId   String
+  createdAt DateTime @default(now())
+
+  // Relations
+  issue Issue        @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  label ProjectLabel @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, labelId])
+  @@index([issueId])
+  @@index([labelId])
+  @@map("issue_label_relations")
+}
+
+model IssueSubtask {
+  id        String   @id @default(cuid())
+  issueId   String
+  title     String   @db.VarChar(200)
+  isCompleted Boolean @default(false)
+  position  Int      @default(0) // For drag & drop ordering
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@index([issueId, position])
+  @@map("issue_subtasks")
+}
+
+model IssueHistory {
+  id          String   @id @default(cuid())
+  issueId     String
+  changedBy   String   // userId
+  field       String   @db.VarChar(50) // e.g., "status", "assignee", "priority"
+  oldValue    String?  @db.VarChar(255)
+  newValue    String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@index([createdAt])
+  @@map("issue_history")
+}
+
+// ============================================================================
+// Comments
+// ============================================================================
+
+model Comment {
+  id        String    @id @default(cuid())
+  issueId   String
+  authorId  String
+  content   String    @db.VarChar(1000)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // Soft delete
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([issueId])
+  @@index([authorId])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@map("comments")
+}
+
+// ============================================================================
+// Notifications
+// ============================================================================
+
+model Notification {
+  id        String          @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String          @db.VarChar(200)
+  message   String?         @db.VarChar(500)
+  isRead    Boolean         @default(false)
+  relatedId String?         // e.g., issueId, teamId, etc.
+  metadata  Json?           // Additional context
+  createdAt DateTime        @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ============================================================================
+// AI Caches
+// ============================================================================
+
+model IssueSummaryCache {
+  id          String   @id @default(cuid())
+  issueId     String   @unique
+  summary     String   @db.Text
+  descriptionHash String @db.VarChar(64) // Hash of description to detect changes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@map("issue_summary_caches")
+}
+
+model IssueSuggestionCache {
+  id          String   @id @default(cuid())
+  issueId     String   @unique
+  suggestion  String   @db.Text
+  descriptionHash String @db.VarChar(64) // Hash of description to detect changes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@map("issue_suggestion_caches")
+}
+
+model CommentSummaryCache {
+  id          String   @id @default(cuid())
+  issueId     String   @unique
+  summary     String   @db.Text
+  commentCount Int     // Number of comments when cached
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@map("comment_summary_caches")
+}
+
+// ============================================================================
+// Model to Functional Requirement Mapping
+// ============================================================================
+//
+// User
+//   - FR-001: Sign up (email, password, name)
+//   - FR-002: Login/logout
+//   - FR-003: Password reset (emailVerified, password)
+//   - FR-004: Google OAuth (password nullable for OAuth users)
+//   - FR-005: Profile management (name, profileImage)
+//   - FR-006: Password change
+//   - FR-007: Account deletion (soft delete via deletedAt)
+//
+// Team
+//   - FR-010: Team creation (name, ownerId)
+//   - FR-011: Team info modification (name)
+//   - FR-012: Team deletion (soft delete, cascades to projects/issues/comments)
+//   - FR-019: Team activity log (via TeamActivityLog)
+//
+// TeamMember
+//   - FR-010: Auto-created when team is created (role = OWNER)
+//   - FR-013: Team member invitation (invited users join as MEMBER)
+//   - FR-014: Team member list (members with role, joinedAt)
+//   - FR-015: Force member removal
+//   - FR-016: Team withdrawal (ADMIN/MEMBER only)
+//   - FR-017: Role system (OWNER/ADMIN/MEMBER)
+//   - FR-018: Role change (OWNER can promote/demote/transfer)
+//
+// TeamInvitation
+//   - FR-013: Team member invitation (email, expiresAt 7 days, acceptedAt)
+//
+// TeamActivityLog
+//   - FR-019: Team activity tracking (member join/leave, role change, project create/delete/archive, team info edit)
+//
+// Project
+//   - FR-020: Project creation (name, description, teamId, ownerId)
+//   - FR-021: Project list (with favorites, issue counts)
+//   - FR-022: Project detail page
+//   - FR-023: Project modification (name, description)
+//   - FR-024: Project deletion (soft delete, cascades to issues/comments)
+//   - FR-025: Project description (max 2000 chars)
+//   - FR-026: Project archive (isArchived flag)
+//
+// ProjectFavorite
+//   - FR-027: Project favorites (user-specific, shown at top of list)
+//
+// ProjectLabel
+//   - FR-038: Issue labels/tags (name, color, max 20 per project, max 5 per issue)
+//
+// ProjectStatus
+//   - FR-033: Issue status change (custom statuses beyond default Backlog/In Progress/Done)
+//   - FR-053: Custom columns (name, color, position, max 5 custom + 3 default = 8 total)
+//   - FR-054: WIP Limit (wipLimit per column)
+//
+// Issue
+//   - FR-030: Issue creation (title, description, assignee, dueDate, priority, labels, status = Backlog)
+//   - FR-031: Issue detail view (all fields, subtasks, comments, AI buttons, history)
+//   - FR-032: Issue modification (all fields editable by team members)
+//   - FR-033: Issue status change (default or custom status via statusId)
+//   - FR-034: Assignee assignment (assigneeUserId must be team member)
+//   - FR-035: Issue deletion (soft delete)
+//   - FR-036: Issue search/filtering (status, assignee, priority, labels, dueDate)
+//   - FR-037: Issue priority (HIGH/MEDIUM/LOW)
+//   - FR-050: Kanban board display (status columns, cards with all info)
+//   - FR-051: Drag & drop status change
+//   - FR-052: Same column ordering (position field for ordering within status)
+//
+// IssueLabelRelation
+//   - FR-038: Many-to-many relation between Issue and ProjectLabel (max 5 labels per issue)
+//
+// IssueSubtask
+//   - FR-039-2: Subtasks (checklist, title, isCompleted, position for drag & drop, max 20 per issue)
+//
+// IssueHistory
+//   - FR-039: Issue change history (status, assignee, priority, title, dueDate changes)
+//
+// Comment
+//   - FR-060: Comment creation (content, max 1000 chars)
+//   - FR-061: Comment list (createdAt order, pagination)
+//   - FR-062: Comment modification (author only)
+//   - FR-063: Comment deletion (soft delete, multiple roles can delete)
+//
+// Notification
+//   - FR-090: In-app notifications (type, title, message, isRead, relatedId for issue/team)
+//     - ISSUE_ASSIGNED: When assigneeUserId is set
+//     - COMMENT_ADDED: When comment is added to issue
+//     - DUE_DATE_REMINDER_1_DAY: 1 day before dueDate
+//     - DUE_DATE_REMINDER_TODAY: On dueDate
+//     - TEAM_INVITATION: When team invitation is sent
+//     - ROLE_CHANGED: When team member role changes
+//   - FR-091: Notification read status (isRead flag, individual/ bulk read)
+//
+// IssueSummaryCache
+//   - FR-040: AI issue description summary (cached, invalidated when description changes via descriptionHash)
+//
+// IssueSuggestionCache
+//   - FR-041: AI resolution strategy suggestion (cached, invalidated when description changes via descriptionHash)
+//
+// CommentSummaryCache
+//   - FR-045: AI comment summary (cached, invalidated when new comments added, requires 5+ comments)
+//
+// Additional Notes:
+//   - Soft delete (deletedAt) implemented for: User, Team, Project, Issue, Comment (FR-071)
+//   - All team/project/issue routes enforce team membership (FR-070)
+//   - Default issue statuses: "Backlog", "In Progress", "Done" (stored as strings)
+//   - Custom statuses: ProjectStatus model (linked via statusId)
+//   - AI rate limiting (FR-042): Implemented at application level, not in schema
+//   - AI auto-labeling (FR-043) and duplicate detection (FR-044): Application-level features, not cached
+
